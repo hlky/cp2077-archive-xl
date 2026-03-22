@@ -11,6 +11,117 @@ config section.
 > - Unless noted otherwise, omitted sections are optional.
 > - Resource paths, appearance names, body types, language codes, and similar string values are expected to be YAML scalars.
 
+## Overview: how these YAML sections fit together
+
+Most top-level sections are independent feature toggles, but several of them also share a
+common resource-aliasing model:
+
+- `resource.scope` defines a named list of resources.
+- `resource.copy`, `resource.link`, and `resource.patch` can target those named lists instead of
+  only concrete depot paths.
+- Other extensions also expand scoped names before they act. In practice that means a single
+  alias can fan out into many real resources when used from `animations.entity` or
+  `quest.phases[*].parent`.
+
+A useful mental model is:
+
+1. Define a logical name with `resource.scope`.
+2. Reuse that logical name from other sections.
+3. Let the runtime expand it into the currently registered concrete resources.
+
+Because scope expansion is path-string based rather than file-extension specific, the same
+mechanism works for `.app`, `.mesh`, `.ent`, `.morphtarget`, `.quest`, and other resource-like
+paths that the runtime later knows how to consume.
+
+## Inferred capabilities and patterns
+
+The parser code and bundled examples imply a few higher-level authoring patterns that are not
+obvious if you read each section in isolation.
+
+### Registering a logical resource list
+
+You can treat `resource.scope` as a registry of named resource groups, not just as metadata for a
+single extension.
+
+```yaml
+resource:
+  scope:
+    "my_mod.characters.hair.app":
+      - "mods\\hair_a.app"
+      - "mods\\hair_b.app"
+```
+
+This does **not** itself patch or load those files. Instead, it creates a reusable symbolic name
+that other sections can reference.
+
+### Registering a `.quest` file as a resource list
+
+The same scope mechanism can register quest resources, even though the key is just a string path.
+That allows one logical quest identifier to expand into one or more concrete `.quest` files.
+
+```yaml
+resource:
+  scope:
+    "my_mod.quest":
+      - "base\\quests\\ep1\\my_story.quest"
+      - "mods\\bonus\\my_story_variant.quest"
+```
+
+This becomes useful anywhere the code later expands scoped resource names. For example,
+`quest.phases[*].parent` is expanded through `ResourceMetaExtension::ExpandList`, so a single
+logical parent path can apply the same phase injection to multiple quest resources.
+
+```yaml
+resource:
+  scope:
+    "my_mod.quest":
+      - "base\\quests\\ep1\\my_story.quest"
+      - "mods\\bonus\\my_story_variant.quest"
+
+quest:
+  phases:
+    - path: "mods\\phases\\extra_intro.questphase"
+      parent: "my_mod.quest"
+      input:
+        node: [0]
+        socket: "In"
+      output:
+        node: [12]
+        socket: "Out"
+```
+
+### Using aliases as fan-out inputs
+
+If a section stores a set of resource paths and later calls the shared scope-expansion helper, a
+single alias can stand in for many concrete resources.
+
+Examples inferred from the code paths reviewed in this repo:
+
+- `animations[*].entity` can target a scoped alias instead of a literal `.ent` path.
+- `quest.phases[*].parent` can target a scoped alias instead of a literal `.quest` path.
+- `resource.copy`, `resource.link`, and `resource.patch` can use scoped aliases on the side that
+  gets expanded into many resources.
+
+That means you can author broad changes once and apply them to a whole family of files.
+
+### Chaining aliases
+
+Scope entries are flattened transitively during configuration, so alias-to-alias chains are valid.
+
+```yaml
+resource:
+  scope:
+    "my_mod.quest":
+      - "my_mod.base_quests"
+      - "mods\\bonus\\standalone.quest"
+    "my_mod.base_quests":
+      - "base\\quests\\a.quest"
+      - "base\\quests\\b.quest"
+```
+
+At runtime, `my_mod.quest` effectively resolves to the final concrete quest files, not to the
+intermediate alias.
+
 ## Top-level sections
 
 The following top-level keys are recognized by the reviewed extension configs:
@@ -60,6 +171,24 @@ animations:
 - `component`: optional scalar. Default is `root`.
 - `vars`: optional sequence.
   - Parser quirk: the loop checks the container node instead of each item, so sequence entries are currently ignored and no variables are actually loaded from YAML.
+
+### Inferred usage
+
+`entity` is later expanded through the shared resource-scope registry, so the scalar does not have
+to be a literal depot `.ent` path. A scoped alias can be used to apply one animation set to many
+entity templates.
+
+```yaml
+resource:
+  scope:
+    "my_mod.npc_templates.ent":
+      - "base\\characters\\npc_a.ent"
+      - "base\\characters\\npc_b.ent"
+
+animations:
+  - entity: "my_mod.npc_templates.ent"
+    set: "my_anim_set"
+```
 
 If `animations` exists but is not a sequence, the parser records `Bad format. Expected list of anim entries.`.
 
@@ -299,6 +428,26 @@ For `connection`, `input`, and `output`, the parser accepts either:
 - The map form assumes both `node` and `socket` exist; malformed maps can fail hard rather than merely being skipped.
 - `parent` accepts only a single scalar even though the runtime stores parent paths in a set.
 
+### Inferred usage
+
+Although `parent` is a scalar in YAML, the runtime later expands that scalar through the shared
+resource-scope registry before validating resource existence. This means one logical `parent`
+identifier can apply the same phase patch to multiple concrete `.quest` resources.
+
+```yaml
+resource:
+  scope:
+    "my_mod.quest_roots":
+      - "base\\quests\\main_quest.quest"
+      - "mods\\bonus\\main_quest_variant.quest"
+
+quest:
+  phases:
+    - path: "mods\\phases\\branch_intro.questphase"
+      parent: "my_mod.quest_roots"
+      intercept: true
+```
+
 ---
 
 ## `resource`
@@ -309,6 +458,24 @@ The checked-in examples under `bundle/source/resources/*.xl` mostly use `resourc
 logical aliases such as `player_customization.app` or `player_ma_hair.mesh` point at other aliases, which
 then point at concrete game resources. The parser does not distinguish between “real” depot paths and mod-defined
 intermediate names; any non-empty resource-path-like scalar can be used as a key or value here.
+
+### Resource graph overview
+
+A practical way to think about the `resource` section is:
+
+- `scope` defines reusable named sets.
+- `copy` materializes new mod-owned files from an existing source.
+- `link` redirects requests for one logical path to another path.
+- `patch` merges data from a patch resource into one or more targets.
+- `fix` rewrites names, referenced paths, or context values inside matching resources.
+
+These features compose. A common workflow is:
+
+1. Use `scope` to define the family of targets.
+2. Use `copy` to create mod-owned intermediates when you should not patch originals directly.
+3. Use `patch` to apply selective changes.
+4. Use `link` so other systems can request a stable logical alias.
+5. Use `fix` when nested references inside the loaded resource also need to be rewritten.
 
 ### `resource.link`
 
@@ -392,6 +559,27 @@ resource:
   `.quest` resources.
 - An empty file is valid YAML input overall. `bundle/source/resources/PlayerCustomizationScope.xl` is empty and simply
   contributes no config.
+
+### Example: quest alias registry plus phase injection
+
+The following pattern is inferred from the shared scope-expansion behavior and the bundled `.quest`
+scopes:
+
+```yaml
+resource:
+  scope:
+    "story_bundle.quest":
+      - "base\\quests\\prologue.quest"
+      - "base\\quests\\ep1\\followup.quest"
+
+quest:
+  phases:
+    - path: "mods\\phases\\story_gate.questphase"
+      parent: "story_bundle.quest"
+```
+
+Here `story_bundle.quest` works like a reusable registry entry: the `quest` section only mentions
+one parent, but the runtime expands it to both concrete quest files before applying the phase mod.
 
 ### `resource.fix`
 
@@ -818,14 +1006,3 @@ Items.MyTransmogItem:
   resource, the original appearance-selection function handles the request.
 
 ---
-
-## Summary of notable parser quirks
-
-These are worth knowing because this document intentionally reflects the current implementation:
-
-- `animations.entity` is effectively scalar-only even though the code appears to intend sequence support.
-- `animations.vars` sequence items are currently ignored.
-- Scalar `journal:` entries do not load because the parser reads the wrong node.
-- `quest.connection`/`input` map parsing assumes both `node` and `socket` exist.
-- `resource.patch: !exclude <scalar>` is not treated as an exclusion.
-- `resource.patch` entries with only excluded targets are discarded.
