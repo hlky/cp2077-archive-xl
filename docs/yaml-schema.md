@@ -305,6 +305,11 @@ For `connection`, `input`, and `output`, the parser accepts either:
 
 The `resource` top-level section is shared by three config parsers: `ResourceLink`, `ResourceMeta`, and `ResourcePatch`.
 
+The checked-in examples under `bundle/source/resources/*.xl` mostly use `resource` as a small graph language:
+logical aliases such as `player_customization.app` or `player_ma_hair.mesh` point at other aliases, which
+then point at concrete game resources. The parser does not distinguish between “real” depot paths and mod-defined
+intermediate names; any non-empty resource-path-like scalar can be used as a key or value here.
+
 ### `resource.link`
 
 Accepted shape:
@@ -312,15 +317,30 @@ Accepted shape:
 ```yaml
 resource:
   link:
+    "base\\target_a.mesh":
+      - "mods\\replacement_a.mesh"
+      - "mods\\replacement_b.mesh"
+```
+
+Intended scalar shorthand:
+
+```yaml
+resource:
+  link:
     "base\\target_a.mesh": "mods\\replacement_a.mesh"
-    "base\\target_b.mesh":
-      - "mods\\replacement_b1.mesh"
-      - "mods\\replacement_b2.mesh"
 ```
 
 - `resource.link`: map.
-- Each key is a target path.
-- Each value is either a scalar source path or a sequence of source paths.
+- Each key is the target path.
+- Each value is intended to be either:
+  1. A scalar source path.
+  2. A sequence of source paths.
+
+#### Parser quirk
+
+The sequence form behaves consistently and is what all bundled examples use. The scalar branch stores the mapping in
+reverse (`source -> target` instead of `target -> source`), so scalar `resource.link` entries do not behave like the
+sequence form. Prefer the sequence form even for a single source.
 
 ### `resource.copy`
 
@@ -339,6 +359,9 @@ resource:
 - Each key is a source path.
 - Each value is either a scalar target path or a sequence of target paths.
 
+Bundled examples commonly pair `copy` with `patch`: first copy a base resource into a mod-owned path, then patch the
+copied resource or use it as a reusable intermediate target.
+
 ### `resource.scope`
 
 Accepted shape:
@@ -346,15 +369,29 @@ Accepted shape:
 ```yaml
 resource:
   scope:
-    "mods\\scope_a.archive": "base\\target_a.mesh"
-    "mods\\scope_b.archive":
-      - "base\\target_b.mesh"
-      - "base\\target_c.mesh"
+    "player_customization.app":
+      - "player_ma_hair.app"
+      - "player_wa_hair.app"
+    "player_ma_hair.app":
+      - "base\\characters\\head\\player_base_heads\\appearances\\hairs\\hh_000_pma__hairs_045.app"
+      - "base\\characters\\head\\player_base_heads\\appearances\\hairs\\hh_001_pma__hairs_053.app"
+    "cyberpunk2077.quest":
+      - "cyberpunk2077_main.quest"
+      - "cyberpunk2077_ep1.quest"
 ```
 
 - `resource.scope`: map.
 - Each key is a scope path.
 - Each value is either a scalar target path or a sequence of target paths.
+
+### Practical notes from the bundled examples
+
+- Scope entries can form chains. For example, one alias can expand to other aliases, which then expand to concrete
+  resources.
+- Scope entries are used for more than archives; the examples scope `.app`, `.mesh`, `.morphtarget`, `.ent`, and
+  `.quest` resources.
+- An empty file is valid YAML input overall. `bundle/source/resources/PlayerCustomizationScope.xl` is empty and simply
+  contributes no config.
 
 ### `resource.fix`
 
@@ -382,6 +419,16 @@ resource:
   - `context`: map of context parameter -> scalar value.
 
 If any of `names`, `paths`, or `context` is present but not a map, that `fix` entry is skipped entirely.
+
+### Practical notes from the bundled examples
+
+- A fix entry may define any subset of `names`, `paths`, and `context`.
+- `names` is used to remap appearance/material names.
+- `paths` is used to remap referenced resources inside another resource.
+- `context` stores string values keyed by parameter name; the examples use it for material/context selectors such as
+  `BeardBaseMaterial`, `LashesBaseMaterial`, and `AppearanceExpansionSource`.
+- YAML anchors and aliases work here because the parser consumes the already-resolved YAML tree. The bundled examples
+  reuse large `paths` and `names` maps with anchors like `&AppearanceFixF`, `&AppearanceFixM`, and `&MaterialFix`.
 
 ### `resource.patch`
 
@@ -416,10 +463,17 @@ resource:
 
 ### `resource.patch` tag behavior
 
-- Sequence and map definitions honor the YAML tag `!exclude`; tagged targets are stored in the patch's exclusion set instead of the inclusion set.
+- Sequence and map definitions honor the YAML tag `!exclude`; tagged targets are stored in the patch's exclusion set
+  instead of the inclusion set.
 - Scalar definitions do **not** honor `!exclude`; scalar targets always go into the inclusion set.
-- Only patches with at least one included target are retained by the current implementation. A definition that contains only excluded targets is dropped.
 
+### Practical notes from the bundled examples
+
+- The bundled patches almost always use the map form so they can limit patching to specific properties such as
+  `appearances`, `renderResourceBlob`, `blob`, `boundingBox`, `targets`, `baseTexture`, or `baseTextureParamName`.
+- `targets` is where the actual include/exclude target list lives for the map form.
+- A patch entry is only retained if it ends up with at least one included target. An entry that only produces excluded
+  targets is discarded by the parser.
 ---
 
 ## `streaming`
