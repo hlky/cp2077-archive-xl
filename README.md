@@ -33,3 +33,4 @@ With the mod you can:
 - [Components overrides](https://github.com/psiberx/cp2077-archive-xl/wiki#components-overrides)
 - [Visual tags](https://github.com/psiberx/cp2077-archive-xl/wiki#visual-tags)
 - [Extending resources](https://github.com/psiberx/cp2077-archive-xl/wiki#extending-resources)
+- [YAML schema reference](docs/yaml-schema.md)
